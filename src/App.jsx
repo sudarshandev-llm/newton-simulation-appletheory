@@ -203,7 +203,7 @@ export default function App() {
             <motion.div
               layout
               transition={springTransition}
-              className="w-full lg:w-96 xl:w-104 flex-shrink-0 overflow-y-auto scrollbar-hide"
+              className="w-full lg:w-96 xl:w-[26rem] flex-shrink-0 overflow-y-auto scrollbar-hide"
             >
               <div className="p-2 lg:p-3 space-y-3">
                 {/* Header */}

@@ -1,8 +1,6 @@
 import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle, useState } from 'react';
 import Matter from 'matter-js';
 
-const PARTICLES = [];
-
 const SimulationCanvas = forwardRef(({
   gravityValue,
   planet,
@@ -19,7 +17,6 @@ const SimulationCanvas = forwardRef(({
   const containerRef = useRef(null);
   const engineRef = useRef(null);
   const appleBodyRef = useRef(null);
-  const groundRef = useRef(null);
   const animationRef = useRef(null);
   const timeRef = useRef(0);
   const hasHitGroundRef = useRef(false);
@@ -27,7 +24,13 @@ const SimulationCanvas = forwardRef(({
   const impactParticlesRef = useRef([]);
   const fallingLeavesRef = useRef([]);
   const trailPositionsRef = useRef([]);
+  const propsRef = useRef({ gravityValue, planet, windForce, airResistance, slowMotion, isPaused, dropHeight, darkMode, onPhysicsUpdate, onAppleHitGround });
   const [dimensions, setDimensions] = useState({ w: 700, h: 500 });
+
+  // Keep propsRef current every render
+  useEffect(() => {
+    propsRef.current = { gravityValue, planet, windForce, airResistance, slowMotion, isPaused, dropHeight, darkMode, onPhysicsUpdate, onAppleHitGround };
+  });
 
   // Responsive sizing
   useEffect(() => {
@@ -99,7 +102,7 @@ const SimulationCanvas = forwardRef(({
           (c) => c.bodyB === appleBodyRef.current
         );
         if (constraint) {
-          Matter.World.remove(engineRef.current.world, constraint);
+          Matter.Composite.remove(engineRef.current.world, constraint);
         }
         appleBodyRef.current.isStatic = false;
         hasHitGroundRef.current = false;
@@ -118,7 +121,7 @@ const SimulationCanvas = forwardRef(({
       (c) => c.bodyB === apple || c.bodyA === apple
     );
     constraints.forEach((c) => {
-      Matter.World.remove(engineRef.current.world, c);
+      Matter.Composite.remove(engineRef.current.world, c);
     });
 
     const appleY = getAppleY(dimensions.h);
@@ -138,15 +141,16 @@ const SimulationCanvas = forwardRef(({
       damping: 0.1,
       length: 5,
     });
-    Matter.World.add(engineRef.current.world, constraint);
+    Matter.Composite.add(engineRef.current.world, constraint);
 
+    const { onPhysicsUpdate } = propsRef.current;
     if (onPhysicsUpdate) {
       onPhysicsUpdate({
         velocity: 0, acceleration: 0, force: 0, distance: 0, time: 0,
         x: dimensions.w * 0.65, y: appleY, isFalling: false,
       });
     }
-  }, [getAppleY, dimensions, onPhysicsUpdate]);
+  }, [getAppleY, dimensions]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -163,7 +167,6 @@ const SimulationCanvas = forwardRef(({
     const ground = Matter.Bodies.rectangle(w / 2, h - 15, w * 2, 30, {
       isStatic: true, friction: 0.8, restitution: 0.2, label: 'ground',
     });
-    groundRef.current = ground;
     const leftWall = Matter.Bodies.rectangle(-10, h / 2, 20, h, { isStatic: true });
     const rightWall = Matter.Bodies.rectangle(w + 10, h / 2, 20, h, { isStatic: true });
 
@@ -180,10 +183,7 @@ const SimulationCanvas = forwardRef(({
       pointB: { x: 0, y: 0 },
       stiffness: 0.8, damping: 0.1, length: 5,
     });
-    Matter.World.add(engine.world, [ground, leftWall, rightWall, apple, constraint]);
-
-    // Store initial setup as reset reference
-    const initialAppleY = appleY;
+    Matter.Composite.add(engine.world, [ground, leftWall, rightWall, apple, constraint]);
 
     Matter.Events.on(engine, 'collisionStart', (event) => {
       event.pairs.forEach((pair) => {
@@ -194,7 +194,7 @@ const SimulationCanvas = forwardRef(({
           if (!hasHitGroundRef.current) {
             hasHitGroundRef.current = true;
             spawnImpactParticles(apple.position.x, h - 30);
-            onAppleHitGround?.();
+            propsRef.current.onAppleHitGround?.();
           }
         }
       });
@@ -203,37 +203,37 @@ const SimulationCanvas = forwardRef(({
     const SWAY_SPEED = 0.5;
 
     const render = () => {
-      if (!isPaused) {
-        const delta = slowMotion ? 16.67 : 16.67;
+      const p = propsRef.current;
+      const { isPaused: paused, slowMotion: slowMo, darkMode: dm, windForce: wf, airResistance: ar, gravityValue: gv, onPhysicsUpdate: opu } = p;
+
+      if (!paused) {
+        const delta = slowMo ? 33.34 : 16.67;
         Matter.Engine.update(engine, delta);
       }
 
       ctx.clearRect(0, 0, w, h);
       const t = timeRef.current;
 
-      drawSky(ctx, w, h, darkMode);
-      drawClouds(ctx, w, h, t, darkMode);
-      drawSun(ctx, w, h, darkMode);
+      drawSky(ctx, w, h, dm);
+      drawClouds(ctx, w, h, t, dm);
+      drawSun(ctx, w, h, dm);
 
-      // Sway value for tree
       const sway = Math.sin(t * SWAY_SPEED) * 2;
 
-      drawGround(ctx, w, h, darkMode, t);
-      drawTree(ctx, w, h, sway, darkMode);
+      drawGround(ctx, w, h, dm, t);
+      drawTree(ctx, w, h, sway, dm);
       drawFallingLeaves(ctx, w, h, t, fallingLeavesRef.current);
-      drawApple(ctx, apple, isDraggingRef.current, darkMode);
+      drawApple(ctx, apple, isDraggingRef.current, dm);
       drawTrail(ctx, trailPositionsRef.current);
       drawImpactParticles(ctx, impactParticlesRef.current);
 
-      // Wind visualization
-      if (Math.abs(windForce) > 0.1) {
-        drawWindLines(ctx, w, h, windForce, t);
+      if (Math.abs(wf) > 0.1) {
+        drawWindLines(ctx, w, h, wf, t);
       }
 
-      if (!isPaused) {
-        timeRef.current += slowMotion ? 0.008 : 0.016;
+      if (!paused) {
+        timeRef.current += slowMo ? 0.008 : 0.016;
 
-        // Update trail
         if (!apple.isStatic && !hasHitGroundRef.current) {
           trailPositionsRef.current.push({ x: apple.position.x, y: apple.position.y });
           if (trailPositionsRef.current.length > 15) {
@@ -241,7 +241,6 @@ const SimulationCanvas = forwardRef(({
           }
         }
 
-        // Update impact particles
         impactParticlesRef.current = impactParticlesRef.current.filter((p) => {
           p.x += p.vx;
           p.y += p.vy;
@@ -250,10 +249,9 @@ const SimulationCanvas = forwardRef(({
           return p.life > 0;
         });
 
-        // Update falling leaves
         addFallingLeaf(w, h, t);
         fallingLeavesRef.current = fallingLeavesRef.current.filter((l) => {
-          l.x += l.vx + windForce * 0.05;
+          l.x += l.vx + wf * 0.05;
           l.y += l.vy;
           l.rotation += l.rotSpeed;
           l.life -= 0.003;
@@ -261,7 +259,6 @@ const SimulationCanvas = forwardRef(({
         });
       }
 
-      // Physics data
       if (apple) {
         const isFalling = !apple.isStatic && !hasHitGroundRef.current;
         const vel = apple.velocity;
@@ -269,11 +266,11 @@ const SimulationCanvas = forwardRef(({
         const startY = getAppleY(h);
         const fallDist = isFalling ? Math.max(0, (h - 30 - apple.position.y) / 100) :
           hasHitGroundRef.current ? Math.max(0, (h - 30 - startY) / 100) : 0;
-        const effectiveGravity = airResistance
-          ? gravityValue * (1 - Math.exp(-timeRef.current * 0.5))
-          : gravityValue;
+        const effectiveGravity = ar
+          ? gv * (1 - Math.exp(-timeRef.current * 0.5))
+          : gv;
 
-        onPhysicsUpdate?.({
+        opu?.({
           velocity: speed,
           acceleration: effectiveGravity,
           force: 0.2 * effectiveGravity,
@@ -297,23 +294,26 @@ const SimulationCanvas = forwardRef(({
     };
   }, [dimensions]);
 
+  // Sync gravity to Matter engine when it changes
   useEffect(() => {
     if (engineRef.current) {
       engineRef.current.gravity.y = gravityValue;
     }
   }, [gravityValue]);
 
+  // Separate effect for applying wind/air-resistance forces
   useEffect(() => {
     if (!engineRef.current) return;
     const applyForces = () => {
-      if (!isPaused && appleBodyRef.current && !appleBodyRef.current.isStatic) {
-        if (Math.abs(windForce) > 0.01) {
+      const p = propsRef.current;
+      if (!p.isPaused && appleBodyRef.current && !appleBodyRef.current.isStatic) {
+        if (Math.abs(p.windForce) > 0.01) {
           Matter.Body.applyForce(appleBodyRef.current, appleBodyRef.current.position, {
-            x: windForce * 0.0005,
+            x: p.windForce * 0.0005,
             y: 0,
           });
         }
-        if (airResistance) {
+        if (p.airResistance) {
           const { x: vx, y: vy } = appleBodyRef.current.velocity;
           const drag = 0.01;
           Matter.Body.applyForce(appleBodyRef.current, appleBodyRef.current.position, {
@@ -346,7 +346,7 @@ const SimulationCanvas = forwardRef(({
       const constraints = engineRef.current.world.constraints.filter(
         (c) => c.bodyB === apple || c.bodyA === apple
       );
-      constraints.forEach((c) => Matter.World.remove(engineRef.current.world, c));
+      constraints.forEach((c) => Matter.Composite.remove(engineRef.current.world, c));
       apple.isStatic = true;
       hasHitGroundRef.current = false;
       timeRef.current = 0;
@@ -539,8 +539,6 @@ function drawTree(ctx, w, h, sway, darkMode) {
   const leafColor2 = darkMode ? '#0d2b0d' : '#388E3C';
 
   ctx.save();
-
-  // Trunk (doesn't sway)
   ctx.fillStyle = trunkColor;
   ctx.beginPath();
   ctx.moveTo(w * 0.48, h - 30);
@@ -550,7 +548,6 @@ function drawTree(ctx, w, h, sway, darkMode) {
   ctx.closePath();
   ctx.fill();
 
-  // Main branches with sway
   ctx.strokeStyle = branchColor;
   ctx.lineCap = 'round';
 
@@ -578,7 +575,6 @@ function drawTree(ctx, w, h, sway, darkMode) {
   ctx.quadraticCurveTo(w * 0.3 - sway * 0.3, h * 0.4, w * 0.25 - sway, h * 0.33);
   ctx.stroke();
 
-  // Small twigs
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.moveTo(w * 0.7 + sway, h * 0.3);
@@ -591,7 +587,6 @@ function drawTree(ctx, w, h, sway, darkMode) {
 
   ctx.restore();
 
-  // Leaf clusters with sway
   drawLeafCluster(ctx, w * 0.72 + sway * 0.5, h * 0.28, 60, leafColor1, leafColor2);
   drawLeafCluster(ctx, w * 0.3 + sway * 0.3, h * 0.33, 50, leafColor1, leafColor2);
   drawLeafCluster(ctx, w * 0.78 + sway * 0.5, h * 0.22, 45, leafColor1, leafColor2);
@@ -625,13 +620,11 @@ function drawApple(ctx, apple, isDragging, darkMode) {
   ctx.translate(x, y);
   ctx.rotate(angle);
 
-  // Shadow
   ctx.beginPath();
   ctx.ellipse(2, 2, 18, 16, 0, 0, Math.PI * 2);
   ctx.fillStyle = 'rgba(0,0,0,0.15)';
   ctx.fill();
 
-  // Body
   const grad = ctx.createRadialGradient(-5, -5, 2, 0, 0, 18);
   if (darkMode) {
     grad.addColorStop(0, '#FF8E8E');
@@ -647,13 +640,11 @@ function drawApple(ctx, apple, isDragging, darkMode) {
   ctx.fillStyle = grad;
   ctx.fill();
 
-  // Highlight
   ctx.beginPath();
   ctx.ellipse(-5, -6, 4, 6, -0.3, 0, Math.PI * 2);
   ctx.fillStyle = 'rgba(255,255,255,0.35)';
   ctx.fill();
 
-  // Stem
   ctx.strokeStyle = darkMode ? '#5D4037' : '#4a3728';
   ctx.lineWidth = 2;
   ctx.lineCap = 'round';
@@ -662,7 +653,6 @@ function drawApple(ctx, apple, isDragging, darkMode) {
   ctx.quadraticCurveTo(3, -24, 4, -26);
   ctx.stroke();
 
-  // Leaf
   ctx.fillStyle = '#4CAF50';
   ctx.beginPath();
   ctx.ellipse(5, -24, 6, 3, 0.4, 0, Math.PI * 2);
@@ -727,7 +717,7 @@ function drawWindLines(ctx, w, h, force, t) {
   const count = Math.floor(Math.abs(force) * 3);
   for (let i = 0; i < count; i++) {
     const x = (t * 50 * dir + i * (w / count)) % w;
-    const y = Math.random() * h;
+    const y = (i * 137.5 + t * 20) % h;
     ctx.beginPath();
     ctx.moveTo(x, y);
     ctx.lineTo(x + dir * 30, y);
