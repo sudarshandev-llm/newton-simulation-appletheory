@@ -1,5 +1,7 @@
-import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
+import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle, useState } from 'react';
 import Matter from 'matter-js';
+
+const PARTICLES = [];
 
 const SimulationCanvas = forwardRef(({
   gravityValue,
@@ -14,17 +16,78 @@ const SimulationCanvas = forwardRef(({
   darkMode,
 }, ref) => {
   const canvasRef = useRef(null);
+  const containerRef = useRef(null);
   const engineRef = useRef(null);
   const appleBodyRef = useRef(null);
-  const treeAnchorRef = useRef(null);
   const groundRef = useRef(null);
   const animationRef = useRef(null);
   const timeRef = useRef(0);
-  const lastTimeRef = useRef(0);
   const hasHitGroundRef = useRef(false);
   const isDraggingRef = useRef(false);
-  const windParticlesRef = useRef([]);
-  const leavesRef = useRef([]);
+  const impactParticlesRef = useRef([]);
+  const fallingLeavesRef = useRef([]);
+  const trailPositionsRef = useRef([]);
+  const [dimensions, setDimensions] = useState({ w: 700, h: 500 });
+
+  // Responsive sizing
+  useEffect(() => {
+    const updateSize = () => {
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        const w = Math.floor(rect.width);
+        const h = Math.floor(rect.height);
+        if (w > 0 && h > 0) {
+          setDimensions({ w, h });
+        }
+      }
+    };
+    updateSize();
+    window.addEventListener('resize', updateSize);
+    const observer = new ResizeObserver(updateSize);
+    if (containerRef.current) observer.observe(containerRef.current);
+    return () => {
+      window.removeEventListener('resize', updateSize);
+      observer.disconnect();
+    };
+  }, []);
+
+  const getAppleY = useCallback((canvasH) => {
+    const dropRatio = (dropHeight - 1) / 9;
+    return canvasH * (0.35 - dropRatio * 0.2);
+  }, [dropHeight]);
+
+  const spawnImpactParticles = useCallback((x, y) => {
+    const count = 12 + Math.floor(Math.random() * 8);
+    for (let i = 0; i < count; i++) {
+      const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI;
+      const speed = 1 + Math.random() * 4;
+      impactParticlesRef.current.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 1,
+        decay: 0.015 + Math.random() * 0.025,
+        size: 2 + Math.random() * 5,
+        color: Math.random() > 0.5 ? '#FF6B6B' : '#FFD1DC',
+      });
+    }
+  }, []);
+
+  const addFallingLeaf = useCallback((w, h, time) => {
+    if (time % 2 < 0.05 && fallingLeavesRef.current.length < 8) {
+      fallingLeavesRef.current.push({
+        x: w * (0.3 + Math.random() * 0.5),
+        y: h * 0.1,
+        vx: (Math.random() - 0.5) * 0.5,
+        vy: 0.3 + Math.random() * 0.5,
+        size: 3 + Math.random() * 4,
+        rotation: Math.random() * Math.PI * 2,
+        rotSpeed: (Math.random() - 0.5) * 0.05,
+        life: 1,
+        color: `hsl(${120 + Math.random() * 30}, ${50 + Math.random() * 30}%, ${35 + Math.random() * 20}%)`,
+      });
+    }
+  }, []);
 
   useImperativeHandle(ref, () => ({
     resetSimulation() {
@@ -45,14 +108,8 @@ const SimulationCanvas = forwardRef(({
     },
   }));
 
-  const getAppleY = (canvasH) => {
-    const dropRatio = (dropHeight - 1) / 9;
-    return canvasH * (0.35 - dropRatio * 0.2);
-  };
-
   const resetApple = useCallback(() => {
     if (!engineRef.current || !appleBodyRef.current) return;
-
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -64,89 +121,14 @@ const SimulationCanvas = forwardRef(({
       Matter.World.remove(engineRef.current.world, c);
     });
 
-    const appleY = getAppleY(canvas.height);
-    Matter.Body.setPosition(apple, { x: canvas.width * 0.65, y: appleY });
+    const appleY = getAppleY(dimensions.h);
+    Matter.Body.setPosition(apple, { x: dimensions.w * 0.65, y: appleY });
     Matter.Body.setVelocity(apple, { x: 0, y: 0 });
     Matter.Body.setAngularVelocity(apple, 0);
     apple.isStatic = true;
     hasHitGroundRef.current = false;
     timeRef.current = 0;
-
-    const anchor = treeAnchorRef.current;
-    if (anchor) {
-      const constraint = Matter.Constraint.create({
-        pointA: { x: anchor.x - canvas.width * 0.65, y: anchor.y - canvas.height * 0.15 },
-        bodyB: apple,
-        pointB: { x: 0, y: 0 },
-        stiffness: 0.8,
-        damping: 0.1,
-        length: 5,
-      });
-      Matter.World.add(engineRef.current.world, constraint);
-    }
-
-    if (onPhysicsUpdate) {
-      onPhysicsUpdate({
-        velocity: 0,
-        acceleration: 0,
-        force: 0,
-        distance: 0,
-        time: 0,
-        x: canvas.width * 0.65,
-        y: canvas.height * 0.15,
-        isFalling: false,
-      });
-    }
-  }, [onPhysicsUpdate]);
-
-  const createWindParticle = useCallback((x, y) => {
-    return {
-      x,
-      y,
-      vx: -2 - Math.random() * 3,
-      vy: (Math.random() - 0.5) * 1,
-      life: 1,
-      size: 2 + Math.random() * 3,
-      color: `rgba(200, 220, 255, ${0.3 + Math.random() * 0.4})`,
-    };
-  }, []);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    const engine = Matter.Engine.create({
-      gravity: { x: 0, y: gravityValue, scale: 0.001 },
-    });
-    engineRef.current = engine;
-
-    const w = canvas.width;
-    const h = canvas.height;
-
-    const ground = Matter.Bodies.rectangle(w / 2, h - 15, w * 2, 30, {
-      isStatic: true,
-      friction: 0.8,
-      restitution: 0.2,
-      label: 'ground',
-    });
-    groundRef.current = ground;
-
-    const leftWall = Matter.Bodies.rectangle(-10, h / 2, 20, h, { isStatic: true });
-    const rightWall = Matter.Bodies.rectangle(w + 10, h / 2, 20, h, { isStatic: true });
-
-    const appleRadius = 18;
-    const appleY = getAppleY(h);
-    const apple = Matter.Bodies.circle(w * 0.65, appleY, appleRadius, {
-      restitution: 0.3,
-      friction: 0.5,
-      density: 0.002,
-      label: 'apple',
-      render: { visible: false },
-    });
-    appleBodyRef.current = apple;
-
-    treeAnchorRef.current = { x: w * 0.65, y: appleY };
+    trailPositionsRef.current = [];
 
     const constraint = Matter.Constraint.create({
       pointA: { x: 0, y: 0 },
@@ -156,10 +138,53 @@ const SimulationCanvas = forwardRef(({
       damping: 0.1,
       length: 5,
     });
+    Matter.World.add(engineRef.current.world, constraint);
 
+    if (onPhysicsUpdate) {
+      onPhysicsUpdate({
+        velocity: 0, acceleration: 0, force: 0, distance: 0, time: 0,
+        x: dimensions.w * 0.65, y: appleY, isFalling: false,
+      });
+    }
+  }, [getAppleY, dimensions, onPhysicsUpdate]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || dimensions.w === 0) return;
+
+    const ctx = canvas.getContext('2d');
+    const { w, h } = dimensions;
+
+    const engine = Matter.Engine.create({
+      gravity: { x: 0, y: gravityValue, scale: 0.001 },
+    });
+    engineRef.current = engine;
+
+    const ground = Matter.Bodies.rectangle(w / 2, h - 15, w * 2, 30, {
+      isStatic: true, friction: 0.8, restitution: 0.2, label: 'ground',
+    });
+    groundRef.current = ground;
+    const leftWall = Matter.Bodies.rectangle(-10, h / 2, 20, h, { isStatic: true });
+    const rightWall = Matter.Bodies.rectangle(w + 10, h / 2, 20, h, { isStatic: true });
+
+    const appleRadius = Math.min(18, w * 0.035);
+    const appleY = getAppleY(h);
+    const apple = Matter.Bodies.circle(w * 0.65, appleY, appleRadius, {
+      restitution: 0.3, friction: 0.5, density: 0.002, label: 'apple', render: { visible: false },
+    });
+    appleBodyRef.current = apple;
+
+    const constraint = Matter.Constraint.create({
+      pointA: { x: 0, y: 0 },
+      bodyB: apple,
+      pointB: { x: 0, y: 0 },
+      stiffness: 0.8, damping: 0.1, length: 5,
+    });
     Matter.World.add(engine.world, [ground, leftWall, rightWall, apple, constraint]);
 
-    // Collision detection
+    // Store initial setup as reset reference
+    const initialAppleY = appleY;
+
     Matter.Events.on(engine, 'collisionStart', (event) => {
       event.pairs.forEach((pair) => {
         if (
@@ -168,41 +193,82 @@ const SimulationCanvas = forwardRef(({
         ) {
           if (!hasHitGroundRef.current) {
             hasHitGroundRef.current = true;
+            spawnImpactParticles(apple.position.x, h - 30);
             onAppleHitGround?.();
           }
         }
       });
     });
 
+    const SWAY_SPEED = 0.5;
+
     const render = () => {
       if (!isPaused) {
-        const delta = slowMotion ? 1000 / 60 / 4 : 1000 / 60;
+        const delta = slowMotion ? 16.67 : 16.67;
         Matter.Engine.update(engine, delta);
       }
 
       ctx.clearRect(0, 0, w, h);
+      const t = timeRef.current;
 
       drawSky(ctx, w, h, darkMode);
-      drawClouds(ctx, w, h, timeRef.current, darkMode);
+      drawClouds(ctx, w, h, t, darkMode);
       drawSun(ctx, w, h, darkMode);
-      drawGround(ctx, w, h, darkMode);
-      drawTree(ctx, w, h, darkMode);
-      drawApple(ctx, apple, w, h, isDraggingRef.current, darkMode);
-      drawWindParticles(ctx, windForce, w, h);
-      drawLeaves(ctx, w, h, timeRef.current);
-      drawConstraints(ctx, engine);
+
+      // Sway value for tree
+      const sway = Math.sin(t * SWAY_SPEED) * 2;
+
+      drawGround(ctx, w, h, darkMode, t);
+      drawTree(ctx, w, h, sway, darkMode);
+      drawFallingLeaves(ctx, w, h, t, fallingLeavesRef.current);
+      drawApple(ctx, apple, isDraggingRef.current, darkMode);
+      drawTrail(ctx, trailPositionsRef.current);
+      drawImpactParticles(ctx, impactParticlesRef.current);
+
+      // Wind visualization
+      if (Math.abs(windForce) > 0.1) {
+        drawWindLines(ctx, w, h, windForce, t);
+      }
 
       if (!isPaused) {
         timeRef.current += slowMotion ? 0.008 : 0.016;
+
+        // Update trail
+        if (!apple.isStatic && !hasHitGroundRef.current) {
+          trailPositionsRef.current.push({ x: apple.position.x, y: apple.position.y });
+          if (trailPositionsRef.current.length > 15) {
+            trailPositionsRef.current.shift();
+          }
+        }
+
+        // Update impact particles
+        impactParticlesRef.current = impactParticlesRef.current.filter((p) => {
+          p.x += p.vx;
+          p.y += p.vy;
+          p.vy += 0.15;
+          p.life -= p.decay;
+          return p.life > 0;
+        });
+
+        // Update falling leaves
+        addFallingLeaf(w, h, t);
+        fallingLeavesRef.current = fallingLeavesRef.current.filter((l) => {
+          l.x += l.vx + windForce * 0.05;
+          l.y += l.vy;
+          l.rotation += l.rotSpeed;
+          l.life -= 0.003;
+          return l.y < h - 30 && l.life > 0;
+        });
       }
 
-      // Update physics data
+      // Physics data
       if (apple) {
         const isFalling = !apple.isStatic && !hasHitGroundRef.current;
         const vel = apple.velocity;
         const speed = Math.sqrt(vel.x * vel.x + vel.y * vel.y);
-        const dist = isFalling ? (h * 0.85 - apple.position.y) / 100 : 0;
-
+        const startY = getAppleY(h);
+        const fallDist = isFalling ? Math.max(0, (h - 30 - apple.position.y) / 100) :
+          hasHitGroundRef.current ? Math.max(0, (h - 30 - startY) / 100) : 0;
         const effectiveGravity = airResistance
           ? gravityValue * (1 - Math.exp(-timeRef.current * 0.5))
           : gravityValue;
@@ -211,7 +277,7 @@ const SimulationCanvas = forwardRef(({
           velocity: speed,
           acceleration: effectiveGravity,
           force: 0.2 * effectiveGravity,
-          distance: Math.max(0, dist),
+          distance: fallDist,
           time: timeRef.current,
           x: apple.position.x,
           y: apple.position.y,
@@ -226,67 +292,61 @@ const SimulationCanvas = forwardRef(({
     render();
 
     return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-      }
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
       Matter.Engine.clear(engine);
     };
-  }, []);
+  }, [dimensions]);
 
-  // Apply wind force each frame
+  useEffect(() => {
+    if (engineRef.current) {
+      engineRef.current.gravity.y = gravityValue;
+    }
+  }, [gravityValue]);
+
   useEffect(() => {
     if (!engineRef.current) return;
-    engineRef.current.gravity.y = gravityValue;
-    engineRef.current.gravity.scale = 0.001;
-
-    const applyWind = () => {
-      if (!isPaused && appleBodyRef.current && Math.abs(windForce) > 0.01 && !appleBodyRef.current.isStatic) {
-        Matter.Body.applyForce(appleBodyRef.current, appleBodyRef.current.position, {
-          x: windForce * 0.0005,
-          y: 0,
-        });
+    const applyForces = () => {
+      if (!isPaused && appleBodyRef.current && !appleBodyRef.current.isStatic) {
+        if (Math.abs(windForce) > 0.01) {
+          Matter.Body.applyForce(appleBodyRef.current, appleBodyRef.current.position, {
+            x: windForce * 0.0005,
+            y: 0,
+          });
+        }
+        if (airResistance) {
+          const { x: vx, y: vy } = appleBodyRef.current.velocity;
+          const drag = 0.01;
+          Matter.Body.applyForce(appleBodyRef.current, appleBodyRef.current.position, {
+            x: -vx * drag,
+            y: -vy * drag,
+          });
+        }
       }
-      if (!isPaused && appleBodyRef.current && airResistance && !appleBodyRef.current.isStatic) {
-        const vx = appleBodyRef.current.velocity.x;
-        const vy = appleBodyRef.current.velocity.y;
-        const drag = 0.01;
-        Matter.Body.applyForce(appleBodyRef.current, appleBodyRef.current.position, {
-          x: -vx * drag,
-          y: -vy * drag,
-        });
-      }
-      requestRef.current = requestAnimationFrame(applyWind);
+      frameRef.current = requestAnimationFrame(applyForces);
     };
-
-    const requestRef = { current: null };
-    applyWind();
-
+    const frameRef = { current: null };
+    applyForces();
     return () => {
-      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      if (frameRef.current) cancelAnimationFrame(frameRef.current);
     };
-  }, [gravityValue, windForce, airResistance, isPaused]);
+  }, [windForce, airResistance, isPaused]);
 
   const handlePointerDown = useCallback((e) => {
     const canvas = canvasRef.current;
     if (!canvas || !appleBodyRef.current) return;
-
     const rect = canvas.getBoundingClientRect();
     const x = (e.clientX - rect.left) * (canvas.width / rect.width);
     const y = (e.clientY - rect.top) * (canvas.height / rect.height);
-
     const apple = appleBodyRef.current;
     const dx = x - apple.position.x;
     const dy = y - apple.position.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
 
-    if (dist < 40) {
+    if (Math.sqrt(dx * dx + dy * dy) < 40) {
       isDraggingRef.current = true;
       const constraints = engineRef.current.world.constraints.filter(
         (c) => c.bodyB === apple || c.bodyA === apple
       );
-      constraints.forEach((c) => {
-        Matter.World.remove(engineRef.current.world, c);
-      });
+      constraints.forEach((c) => Matter.World.remove(engineRef.current.world, c));
       apple.isStatic = true;
       hasHitGroundRef.current = false;
       timeRef.current = 0;
@@ -295,12 +355,10 @@ const SimulationCanvas = forwardRef(({
 
   const handlePointerMove = useCallback((e) => {
     if (!isDraggingRef.current || !canvasRef.current || !appleBodyRef.current) return;
-
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
     const x = (e.clientX - rect.left) * (canvas.width / rect.width);
     const y = (e.clientY - rect.top) * (canvas.height / rect.height);
-
     Matter.Body.setPosition(appleBodyRef.current, {
       x: Math.max(30, Math.min(canvas.width - 30, x)),
       y: Math.max(30, Math.min(canvas.height - 60, y)),
@@ -313,30 +371,19 @@ const SimulationCanvas = forwardRef(({
       isDraggingRef.current = false;
       appleBodyRef.current.isStatic = false;
       hasHitGroundRef.current = false;
+      trailPositionsRef.current = [];
     }
   }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
-    const onDown = (e) => {
-      e.preventDefault();
-      handlePointerDown(e);
-    };
-    const onMove = (e) => {
-      e.preventDefault();
-      handlePointerMove(e);
-    };
-    const onUp = (e) => {
-      e.preventDefault();
-      handlePointerUp();
-    };
-
+    const onDown = (e) => { e.preventDefault(); handlePointerDown(e); };
+    const onMove = (e) => { e.preventDefault(); handlePointerMove(e); };
+    const onUp = (e) => { e.preventDefault(); handlePointerUp(); };
     canvas.addEventListener('pointerdown', onDown);
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
-
     return () => {
       canvas.removeEventListener('pointerdown', onDown);
       window.removeEventListener('pointermove', onMove);
@@ -345,103 +392,91 @@ const SimulationCanvas = forwardRef(({
   }, [handlePointerDown, handlePointerMove, handlePointerUp]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      width={700}
-      height={500}
-      className="w-full h-full rounded-2xl cursor-grab active:cursor-grabbing"
-      style={{ touchAction: 'none' }}
-    />
+    <div ref={containerRef} className="w-full h-full">
+      <canvas
+        ref={canvasRef}
+        width={dimensions.w}
+        height={dimensions.h}
+        className="w-full h-full rounded-2xl cursor-grab active:cursor-grabbing"
+        style={{ touchAction: 'none' }}
+      />
+    </div>
   );
 });
 
 function drawSky(ctx, w, h, darkMode) {
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
   if (darkMode) {
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
     grad.addColorStop(0, '#0f0c29');
     grad.addColorStop(0.5, '#302b63');
     grad.addColorStop(1, '#24243e');
-    ctx.fillStyle = grad;
   } else {
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
     grad.addColorStop(0, '#E8F4FD');
     grad.addColorStop(0.4, '#C9E4FF');
     grad.addColorStop(0.7, '#FFD1DC');
     grad.addColorStop(1, '#D4EDDA');
-    ctx.fillStyle = grad;
   }
+  ctx.fillStyle = grad;
   ctx.fillRect(0, 0, w, h);
 }
 
 function drawSun(ctx, w, h, darkMode) {
   const x = w * 0.85;
   const y = h * 0.1;
+  const r = Math.min(35, w * 0.05);
 
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
   if (darkMode) {
-    ctx.beginPath();
-    ctx.arc(x, y, 30, 0, Math.PI * 2);
     ctx.fillStyle = '#FFEAA7';
-    ctx.fill();
     ctx.shadowColor = '#FFEAA7';
     ctx.shadowBlur = 40;
-    ctx.beginPath();
-    ctx.arc(x, y, 30, 0, Math.PI * 2);
     ctx.fill();
     ctx.shadowBlur = 0;
   } else {
-    ctx.beginPath();
-    ctx.arc(x, y, 35, 0, Math.PI * 2);
     ctx.fillStyle = '#FFF3B0';
-    ctx.fill();
     ctx.shadowColor = '#FFEAA7';
     ctx.shadowBlur = 60;
-    ctx.beginPath();
-    ctx.arc(x, y, 35, 0, Math.PI * 2);
     ctx.fill();
     ctx.shadowBlur = 0;
-
-    // Rays
     ctx.strokeStyle = 'rgba(255, 243, 176, 0.3)';
     ctx.lineWidth = 2;
     for (let i = 0; i < 12; i++) {
       const angle = (i / 12) * Math.PI * 2;
       ctx.beginPath();
-      ctx.moveTo(x + Math.cos(angle) * 40, y + Math.sin(angle) * 40);
-      ctx.lineTo(x + Math.cos(angle) * 55, y + Math.sin(angle) * 55);
+      ctx.moveTo(x + Math.cos(angle) * (r + 5), y + Math.sin(angle) * (r + 5));
+      ctx.lineTo(x + Math.cos(angle) * (r + 20), y + Math.sin(angle) * (r + 20));
       ctx.stroke();
     }
   }
 }
 
-function drawClouds(ctx, w, h, time, darkMode) {
-  const cloudColor = darkMode ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.7)';
-  const cloudColor2 = darkMode ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.5)';
-
+function drawClouds(ctx, w, h, t, darkMode) {
+  const color = darkMode ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.7)';
   const clouds = [
     { x: w * 0.1, y: h * 0.08, s: 0.8, speed: 0.1 },
     { x: w * 0.4, y: h * 0.05, s: 1.0, speed: 0.15 },
     { x: w * 0.7, y: h * 0.12, s: 0.6, speed: 0.08 },
     { x: w * 0.9, y: h * 0.06, s: 0.7, speed: 0.12 },
   ];
-
-  clouds.forEach((cloud) => {
-    const ox = Math.sin(time * cloud.speed + cloud.x) * 10;
-    const cx = cloud.x + ox;
-    drawCloud(ctx, cx, cloud.y, cloud.s, cloudColor);
+  clouds.forEach((c) => {
+    const ox = Math.sin(t * c.speed + c.x) * 10;
+    drawCloud(ctx, c.x + ox, c.y, c.s, color);
   });
 }
 
 function drawCloud(ctx, x, y, scale, color) {
   ctx.fillStyle = color;
+  const s = scale;
   ctx.beginPath();
-  ctx.arc(x, y, 25 * scale, 0, Math.PI * 2);
-  ctx.arc(x + 25 * scale, y - 10 * scale, 30 * scale, 0, Math.PI * 2);
-  ctx.arc(x + 50 * scale, y, 25 * scale, 0, Math.PI * 2);
-  ctx.arc(x + 25 * scale, y + 5 * scale, 20 * scale, 0, Math.PI * 2);
+  ctx.arc(x, y, 25 * s, 0, Math.PI * 2);
+  ctx.arc(x + 25 * s, y - 10 * s, 30 * s, 0, Math.PI * 2);
+  ctx.arc(x + 50 * s, y, 25 * s, 0, Math.PI * 2);
+  ctx.arc(x + 25 * s, y + 5 * s, 20 * s, 0, Math.PI * 2);
   ctx.fill();
 }
 
-function drawGround(ctx, w, h, darkMode) {
+function drawGround(ctx, w, h, darkMode, t) {
   if (darkMode) {
     const grad = ctx.createLinearGradient(0, h - 40, 0, h);
     grad.addColorStop(0, '#2d3436');
@@ -460,12 +495,11 @@ function drawGround(ctx, w, h, darkMode) {
     ctx.fillStyle = 'rgba(255,255,255,0.15)';
     for (let i = 0; i < 5; i++) {
       ctx.beginPath();
-      ctx.ellipse(50 + i * 150, h - 28, 40, 4, 0, 0, Math.PI * 2);
+      ctx.ellipse(50 + i * (w / 5), h - 28, 40, 4, 0, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 
-  // Ground line
   ctx.strokeStyle = darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)';
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -473,11 +507,10 @@ function drawGround(ctx, w, h, darkMode) {
   ctx.lineTo(w, h - 30);
   ctx.stroke();
 
-  // Grass tufts
   if (!darkMode) {
     ctx.strokeStyle = 'rgba(90, 150, 60, 0.4)';
     ctx.lineWidth = 1.5;
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < Math.floor(w / 35); i++) {
       const gx = 20 + i * 35;
       const gy = h - 30;
       ctx.beginPath();
@@ -491,7 +524,6 @@ function drawGround(ctx, w, h, darkMode) {
     }
   }
 
-  // Shadow under tree
   if (!darkMode) {
     ctx.fillStyle = 'rgba(0,0,0,0.06)';
     ctx.beginPath();
@@ -500,13 +532,15 @@ function drawGround(ctx, w, h, darkMode) {
   }
 }
 
-function drawTree(ctx, w, h, darkMode) {
+function drawTree(ctx, w, h, sway, darkMode) {
   const trunkColor = darkMode ? '#3d2b1f' : '#5D4037';
   const branchColor = darkMode ? '#4a3728' : '#6D4C41';
   const leafColor1 = darkMode ? '#1a3a1a' : '#4CAF50';
   const leafColor2 = darkMode ? '#0d2b0d' : '#388E3C';
 
-  // Trunk
+  ctx.save();
+
+  // Trunk (doesn't sway)
   ctx.fillStyle = trunkColor;
   ctx.beginPath();
   ctx.moveTo(w * 0.48, h - 30);
@@ -516,61 +550,48 @@ function drawTree(ctx, w, h, darkMode) {
   ctx.closePath();
   ctx.fill();
 
-  // Trunk texture lines
-  ctx.strokeStyle = darkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
-  ctx.lineWidth = 1;
-  for (let i = 0; i < 3; i++) {
-    const ty = h * 0.65 + i * 40;
-    ctx.beginPath();
-    ctx.moveTo(w * 0.49, ty);
-    ctx.lineTo(w * 0.505, ty - 5);
-    ctx.stroke();
-  }
-
-  // Main branch going right
+  // Main branches with sway
   ctx.strokeStyle = branchColor;
-  ctx.lineWidth = 12;
   ctx.lineCap = 'round';
+
+  ctx.lineWidth = 12;
   ctx.beginPath();
   ctx.moveTo(w * 0.5, h * 0.55);
-  ctx.quadraticCurveTo(w * 0.62, h * 0.4, w * 0.7, h * 0.3);
+  ctx.quadraticCurveTo(w * 0.62 + sway * 0.5, h * 0.4, w * 0.7 + sway, h * 0.3);
   ctx.stroke();
 
-  // Sub branch going up-right
   ctx.lineWidth = 6;
   ctx.beginPath();
-  ctx.moveTo(w * 0.6, h * 0.4);
-  ctx.quadraticCurveTo(w * 0.68, h * 0.3, w * 0.75, h * 0.22);
+  ctx.moveTo(w * 0.6 + sway * 0.3, h * 0.4);
+  ctx.quadraticCurveTo(w * 0.68 + sway * 0.5, h * 0.3, w * 0.75 + sway, h * 0.22);
   ctx.stroke();
 
-  // Branch going left
   ctx.lineWidth = 8;
   ctx.beginPath();
   ctx.moveTo(w * 0.5, h * 0.55);
-  ctx.quadraticCurveTo(w * 0.38, h * 0.45, w * 0.3, h * 0.35);
+  ctx.quadraticCurveTo(w * 0.38 - sway * 0.3, h * 0.45, w * 0.3 - sway, h * 0.35);
   ctx.stroke();
 
   ctx.lineWidth = 4;
   ctx.beginPath();
-  ctx.moveTo(w * 0.38, h * 0.48);
-  ctx.quadraticCurveTo(w * 0.3, h * 0.4, w * 0.25, h * 0.33);
+  ctx.moveTo(w * 0.38 - sway * 0.2, h * 0.48);
+  ctx.quadraticCurveTo(w * 0.3 - sway * 0.3, h * 0.4, w * 0.25 - sway, h * 0.33);
   ctx.stroke();
 
-  // Thin twigs
+  // Small twigs
   ctx.lineWidth = 3;
-  ctx.strokeStyle = branchColor;
   ctx.beginPath();
-  ctx.moveTo(w * 0.7, h * 0.3);
-  ctx.quadraticCurveTo(w * 0.75, h * 0.28, w * 0.8, h * 0.25);
+  ctx.moveTo(w * 0.7 + sway, h * 0.3);
+  ctx.quadraticCurveTo(w * 0.75 + sway, h * 0.28, w * 0.8 + sway * 1.2, h * 0.25);
   ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(w * 0.65, h * 0.35);
-  ctx.quadraticCurveTo(w * 0.7, h * 0.32, w * 0.76, h * 0.3);
+  ctx.moveTo(w * 0.65 + sway * 0.5, h * 0.35);
+  ctx.quadraticCurveTo(w * 0.7 + sway * 0.5, h * 0.32, w * 0.76 + sway, h * 0.3);
   ctx.stroke();
 
-  // Leaf clusters
-  const sway = Math.sin(Date.now() / 2000) * 2;
+  ctx.restore();
 
+  // Leaf clusters with sway
   drawLeafCluster(ctx, w * 0.72 + sway * 0.5, h * 0.28, 60, leafColor1, leafColor2);
   drawLeafCluster(ctx, w * 0.3 + sway * 0.3, h * 0.33, 50, leafColor1, leafColor2);
   drawLeafCluster(ctx, w * 0.78 + sway * 0.5, h * 0.22, 45, leafColor1, leafColor2);
@@ -578,30 +599,25 @@ function drawTree(ctx, w, h, darkMode) {
   drawLeafCluster(ctx, w * 0.38 + sway * 0.3, h * 0.45, 35, leafColor1, leafColor2);
   drawLeafCluster(ctx, w * 0.65 + sway * 0.4, h * 0.38, 35, leafColor1, leafColor2);
   drawLeafCluster(ctx, w * 0.25 + sway * 0.2, h * 0.32, 30, leafColor1, leafColor2);
-
-  // Tiny leaf details on twigs
   drawLeafCluster(ctx, w * 0.82 + sway * 0.5, h * 0.24, 25, leafColor1, leafColor2);
   drawLeafCluster(ctx, w * 0.76 + sway * 0.4, h * 0.29, 20, leafColor1, leafColor2);
 }
 
 function drawLeafCluster(ctx, x, y, size, color1, color2) {
   ctx.save();
-  const layers = 4;
-  for (let i = layers; i >= 0; i--) {
+  for (let i = 4; i >= 0; i--) {
     const r = size * (0.3 + i * 0.15);
-    const alpha = 0.5 + i * 0.1;
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fillStyle = i % 2 === 0 ? color1 : color2;
-    ctx.globalAlpha = Math.min(alpha, 0.8);
+    ctx.globalAlpha = Math.min(0.5 + i * 0.1, 0.8);
     ctx.fill();
   }
   ctx.restore();
 }
 
-function drawApple(ctx, apple, w, h, isDragging, darkMode) {
+function drawApple(ctx, apple, isDragging, darkMode) {
   if (!apple) return;
-
   const { x, y } = apple.position;
   const angle = apple.angle;
 
@@ -609,13 +625,13 @@ function drawApple(ctx, apple, w, h, isDragging, darkMode) {
   ctx.translate(x, y);
   ctx.rotate(angle);
 
-  // Apple shadow
+  // Shadow
   ctx.beginPath();
   ctx.ellipse(2, 2, 18, 16, 0, 0, Math.PI * 2);
   ctx.fillStyle = 'rgba(0,0,0,0.15)';
   ctx.fill();
 
-  // Apple body
+  // Body
   const grad = ctx.createRadialGradient(-5, -5, 2, 0, 0, 18);
   if (darkMode) {
     grad.addColorStop(0, '#FF8E8E');
@@ -631,13 +647,13 @@ function drawApple(ctx, apple, w, h, isDragging, darkMode) {
   ctx.fillStyle = grad;
   ctx.fill();
 
-  // Apple highlight
+  // Highlight
   ctx.beginPath();
   ctx.ellipse(-5, -6, 4, 6, -0.3, 0, Math.PI * 2);
   ctx.fillStyle = 'rgba(255,255,255,0.35)';
   ctx.fill();
 
-  // Apple stem
+  // Stem
   ctx.strokeStyle = darkMode ? '#5D4037' : '#4a3728';
   ctx.lineWidth = 2;
   ctx.lineCap = 'round';
@@ -646,7 +662,7 @@ function drawApple(ctx, apple, w, h, isDragging, darkMode) {
   ctx.quadraticCurveTo(3, -24, 4, -26);
   ctx.stroke();
 
-  // Apple leaf
+  // Leaf
   ctx.fillStyle = '#4CAF50';
   ctx.beginPath();
   ctx.ellipse(5, -24, 6, 3, 0.4, 0, Math.PI * 2);
@@ -654,7 +670,6 @@ function drawApple(ctx, apple, w, h, isDragging, darkMode) {
 
   ctx.restore();
 
-  // Glow when dragging
   if (isDragging) {
     ctx.save();
     ctx.beginPath();
@@ -667,73 +682,56 @@ function drawApple(ctx, apple, w, h, isDragging, darkMode) {
   }
 }
 
-function drawConstraints(ctx, engine) {
-  const constraints = engine.world.constraints;
-  if (!constraints) return;
-
-  constraints.forEach((constraint) => {
-    if (constraint.bodyB) {
-      const posA = constraint.pointA;
-      const posB = constraint.bodyB.position;
-      ctx.beginPath();
-      ctx.moveTo(
-        (constraint.bodyA ? constraint.bodyA.position.x : 0) + posA.x,
-        (constraint.bodyA ? constraint.bodyA.position.y : 0) + posA.y
-      );
-      ctx.lineTo(
-        (constraint.bodyA ? constraint.bodyA.position.x : 0) + posB.x,
-        (constraint.bodyA ? constraint.bodyA.position.y : 0) + posB.y
-      );
-      ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-    }
-  });
-}
-
-function drawWindParticles(ctx, windForce, w, h) {
-  if (Math.abs(windForce) < 0.1) return;
-
-  ctx.fillStyle = `rgba(200, 220, 255, ${Math.min(Math.abs(windForce) * 0.05, 0.3)})`;
-  for (let i = 0; i < Math.abs(windForce) * 3; i++) {
-    const x = Math.random() * w;
-    const y = Math.random() * h;
+function drawTrail(ctx, trail) {
+  if (trail.length < 2) return;
+  for (let i = 1; i < trail.length; i++) {
+    const alpha = i / trail.length * 0.3;
     ctx.beginPath();
-    ctx.arc(x, y, 1 + Math.random() * 2, 0, Math.PI * 2);
+    ctx.arc(trail[i].x, trail[i].y, 2 * (i / trail.length), 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255, 107, 107, ${alpha})`;
     ctx.fill();
   }
+}
 
-  // Wind lines
-  ctx.strokeStyle = `rgba(200, 220, 255, ${Math.min(Math.abs(windForce) * 0.03, 0.2)})`;
+function drawImpactParticles(ctx, particles) {
+  for (const p of particles) {
+    ctx.save();
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawFallingLeaves(ctx, w, h, t, leaves) {
+  for (const l of leaves) {
+    ctx.save();
+    ctx.translate(l.x, l.y);
+    ctx.rotate(l.rotation);
+    ctx.globalAlpha = l.life * 0.6;
+    ctx.fillStyle = l.color;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, l.size, l.size * 0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawWindLines(ctx, w, h, force, t) {
+  const intensity = Math.min(Math.abs(force) * 0.04, 0.3);
+  ctx.strokeStyle = `rgba(200, 220, 255, ${intensity})`;
   ctx.lineWidth = 1;
-  for (let i = 0; i < Math.abs(windForce) * 2; i++) {
-    const x = Math.random() * w;
+  const dir = force > 0 ? 1 : -1;
+  const count = Math.floor(Math.abs(force) * 3);
+  for (let i = 0; i < count; i++) {
+    const x = (t * 50 * dir + i * (w / count)) % w;
     const y = Math.random() * h;
     ctx.beginPath();
     ctx.moveTo(x, y);
-    ctx.lineTo(x + windForce * 5, y);
+    ctx.lineTo(x + dir * 30, y);
     ctx.stroke();
-  }
-}
-
-function drawLeaves(ctx, w, h, time) {
-  const leafCount = 3;
-  for (let i = 0; i < leafCount; i++) {
-    const phase = (time * 0.5 + i * 2) % (Math.PI * 4);
-    const x = w * 0.5 + Math.sin(phase * 0.5) * 100;
-    const y = h * 0.3 + phase * 15;
-    const alpha = Math.max(0, 1 - phase / (Math.PI * 4));
-
-    if (alpha > 0 && y < h - 30) {
-      ctx.fillStyle = `rgba(76, 175, 80, ${alpha * 0.4})`;
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(phase);
-      ctx.beginPath();
-      ctx.ellipse(0, 0, 6, 3, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
   }
 }
 
